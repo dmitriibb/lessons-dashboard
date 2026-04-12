@@ -1,0 +1,22 @@
+{
+    "journal": [
+        {
+            "timestamp": "2024-06-01T10:00:00Z",
+            "agent": "Manager",
+            "entry": "Read task 1 and pass it to the Coder",
+            "details": "Analysed task-1-init-backed-service. Everything looks clear. Passing the task to the Coder to start working on it."
+        },
+        {
+            "timestamp": "2024-06-01T10:00:00Z",
+            "agent": "Coder",
+            "entry": "Start implementing the backend service",
+            "details": "Set up the initial project structure and created a basic API endpoint."
+        },
+        {
+            "timestamp": "2024-06-01T12:00:00Z",
+            "agent": "Coder",
+            "entry": "Finished the initial implementation of the backend service. Passing to QA",
+            "details": ""
+        }
+    ]
+}

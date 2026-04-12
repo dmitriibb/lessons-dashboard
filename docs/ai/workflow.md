@@ -1,4 +1,4 @@
-# AI Workflow
+﻿# AI Workflow
 
 ## Goal
 
@@ -19,6 +19,7 @@ Detailed role definitions live in:
 - [agents/manager.md](/c:/projects/lessons-dashboard/docs/ai/agents/manager.md)
 - [agents/coder.md](/c:/projects/lessons-dashboard/docs/ai/agents/coder.md)
 - [agents/qa.md](/c:/projects/lessons-dashboard/docs/ai/agents/qa.md)
+- [task-storage-workflow.md](/c:/projects/lessons-dashboard/docs/ai/task-storage-workflow.md)
 
 ## High-Level Flow
 
@@ -26,7 +27,11 @@ Detailed role definitions live in:
 
 The user prepares a list of tasks and pushes them into the GitHub repository.
 
-The exact task format is not fixed yet, but the input must be structured enough for the `Manager` agent to analyze it.
+Tasks are stored in the repository under the `tasks/` directory, one folder per task.
+
+The exact repository task flow is documented in:
+
+- [task-storage-workflow.md](/c:/projects/lessons-dashboard/docs/ai/task-storage-workflow.md)
 
 ### 2. Cloud Worker Starts
 
@@ -105,6 +110,7 @@ After successful QA:
 - `Manager` confirms the workflow state
 - `Coder` merges the PR according to the Git workflow rules
 - `Manager` marks the task as complete
+- `Manager` moves the task folder from `tasks/` to `tasks_done/`
 - `Manager` assigns the next ready task
 
 ### 9. Waiting State
@@ -138,7 +144,6 @@ The current intended rules are:
 These points still need design decisions:
 
 - How the `Manager` communicates with the user
-- How tasks are stored and detected in the repository
 - How PR previews or feature-branch deployments are exposed to `QA`
 - Whether agents run as separate jobs, separate services, or coordinated steps in one pipeline
 - How agent state is persisted between workflow runs
