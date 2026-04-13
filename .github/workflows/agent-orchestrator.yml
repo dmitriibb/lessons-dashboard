@@ -1,7 +1,12 @@
-name: Agent Orchestrator
+﻿name: Agent Orchestrator
 
 on:
   workflow_dispatch:
+    inputs:
+      prompt:
+        description: Prompt to send to the Manager test call
+        required: false
+        default: Pick up only task-1-init-backed-service and tell me whether it is ready for implementation.
 
 permissions:
   contents: write
@@ -16,6 +21,7 @@ jobs:
     env:
       BOT_GIT_NAME: ${{ vars.BOT_GIT_NAME }}
       BOT_GIT_EMAIL: ${{ vars.BOT_GIT_EMAIL }}
+      MANAGER_PROMPT: ${{ inputs.prompt }}
 
     steps:
       - name: Checkout repository
@@ -58,15 +64,14 @@ jobs:
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a setup verification assistant."
+                  "content": "You are a Manager agent for a software repository. Read the user prompt literally and respond concisely."
                 },
                 {
                   "role": "user",
-                  "content": "Reply with exactly: GitHub Models is working."
+                  "content": "'"${MANAGER_PROMPT}"'"
                 }
               ],
               "temperature": 0
             }')"
 
           echo "${response}"
-
