@@ -1,4 +1,4 @@
-﻿name: Agent Orchestrator
+name: Agent Orchestrator
 
 on:
   workflow_dispatch:
