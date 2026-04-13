@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       prompt:
-        description: Prompt to send to the Manager test call
+        description: Prompt to send to the Manager
         required: false
         default: Pick up only task-1-init-backed-service and tell me whether it is ready for implementation.
 
@@ -15,7 +15,7 @@ permissions:
   models: read
 
 jobs:
-  verify-setup:
+  manager:
     runs-on: ubuntu-latest
 
     env:
@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Validate required variables
         shell: bash
@@ -42,6 +44,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${MANAGER_PROMPT}" ]; then
+            echo "Missing workflow input prompt"
+            exit 1
+          fi
+
       - name: Configure git bot identity
         run: |
           git config user.name "${BOT_GIT_NAME}"
@@ -49,29 +56,28 @@ jobs:
           git config --get user.name
           git config --get user.email
 
-      - name: Verify GitHub Models access
+      - name: Run Manager agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/agents/manager.py | tee manager-output.txt
+
+      - name: Commit journal updates
         shell: bash
         run: |
           set -euo pipefail
 
-          response="$(curl -sS https://models.github.ai/inference/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -d '{
-              "model": "openai/gpt-4.1-mini",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": "You are a Manager agent for a software repository. Read the user prompt literally and respond concisely."
-                },
-                {
-                  "role": "user",
-                  "content": "'"${MANAGER_PROMPT}"'"
-                }
-              ],
-              "temperature": 0
-            }')"
+          if git diff --quiet -- tasks; then
+            echo "No task journal updates were created"
+            exit 0
+          fi
 
-          echo "${response}"
+          git add tasks
+          git commit -m "chore: manager review task queue"
+          git push origin HEAD:${{ github.ref_name }}
+
+      - name: Upload manager output
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-output
+          path: manager-output.txt
