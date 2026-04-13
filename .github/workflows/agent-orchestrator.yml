@@ -1,0 +1,72 @@
+name: Agent Orchestrator
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  models: read
+
+jobs:
+  verify-setup:
+    runs-on: ubuntu-latest
+
+    env:
+      BOT_GIT_NAME: ${{ vars.BOT_GIT_NAME }}
+      BOT_GIT_EMAIL: ${{ vars.BOT_GIT_EMAIL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required variables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BOT_GIT_NAME}" ]; then
+            echo "Missing repository variable BOT_GIT_NAME"
+            exit 1
+          fi
+
+          if [ -z "${BOT_GIT_EMAIL}" ]; then
+            echo "Missing repository variable BOT_GIT_EMAIL"
+            exit 1
+          fi
+
+      - name: Configure git bot identity
+        run: |
+          git config user.name "${BOT_GIT_NAME}"
+          git config user.email "${BOT_GIT_EMAIL}"
+          git config --get user.name
+          git config --get user.email
+
+      - name: Verify GitHub Models access
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          response="$(curl -sS https://models.github.ai/inference/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -d '{
+              "model": "openai/gpt-4.1-mini",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "You are a setup verification assistant."
+                },
+                {
+                  "role": "user",
+                  "content": "Reply with exactly: GitHub Models is working."
+                }
+              ],
+              "temperature": 0
+            }')"
+
+          echo "${response}"
+
