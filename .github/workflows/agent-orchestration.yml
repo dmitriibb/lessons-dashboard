@@ -1,0 +1,517 @@
+name: Agent Orchestration
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_name:
+        description: Optional task folder to dispatch from tasks/
+        required: false
+        type: string
+      base_branch:
+        description: Branch that Coder must target
+        required: true
+        default: dev
+        type: string
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    branches:
+      - dev
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  models: read
+
+concurrency:
+  group: agent-orchestration-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-coder:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      BASE_BRANCH: ${{ inputs.base_branch }}
+      REQUESTED_TASK: ${{ inputs.task_name }}
+      BOT_GIT_NAME: ${{ vars.BOT_GIT_NAME }}
+      BOT_GIT_EMAIL: ${{ vars.BOT_GIT_EMAIL }}
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+          fetch-depth: 0
+
+      - name: Validate dispatch configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BASE_BRANCH}" ]; then
+            echo "base_branch input is required"
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}" ]; then
+            echo "Repository secret COPILOT_ASSIGNMENT_TOKEN is required"
+            exit 1
+          fi
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "${BOT_GIT_NAME:-github-actions[bot]}"
+          git config user.email "${BOT_GIT_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
+
+      - name: Select task folder
+        id: select-task
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          root = Path.cwd()
+          tasks_dir = root / "tasks"
+          requested = os.environ.get("REQUESTED_TASK", "").strip()
+
+          def load_journal(task_dir: Path):
+              journal_path = task_dir / "agents-journal.json"
+              if not journal_path.exists():
+                  return []
+              try:
+                  data = json.loads(journal_path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError:
+                  return []
+              return data.get("journal", [])
+
+          candidates = sorted([p for p in tasks_dir.iterdir() if p.is_dir()]) if tasks_dir.exists() else []
+          if not candidates:
+              print("No task folders found in tasks/", file=sys.stderr)
+              sys.exit(1)
+
+          selected = None
+          if requested:
+              task_dir = tasks_dir / requested
+              if not task_dir.exists():
+                  print(f"Requested task not found: {requested}", file=sys.stderr)
+                  sys.exit(1)
+              selected = task_dir
+          else:
+              for task_dir in candidates:
+                  if not (task_dir / "description.md").exists():
+                      continue
+                  if (task_dir / "coder.summary.md").exists():
+                      continue
+                  journal = load_journal(task_dir)
+                  dispatched = any(
+                      entry.get("agent") == "Orchestrator" and "Dispatched task to Coder" in entry.get("entry", "")
+                      for entry in journal
+                  )
+                  if dispatched:
+                      continue
+                  selected = task_dir
+                  break
+
+          if selected is None:
+              print("No eligible task folder found for dispatch", file=sys.stderr)
+              sys.exit(1)
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as fh:
+              fh.write(f"task_name={selected.name}\n")
+              fh.write(f"task_dir=tasks/{selected.name}\n")
+          PY
+
+      - name: Append orchestrator journal entry
+        shell: bash
+        env:
+          TASK_DIR: ${{ steps.select-task.outputs.task_dir }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          task_dir = Path(os.environ["TASK_DIR"])
+          journal_path = task_dir / "agents-journal.json"
+
+          if journal_path.exists():
+              data = json.loads(journal_path.read_text(encoding="utf-8"))
+          else:
+              data = {"journal": []}
+
+          journal = data.setdefault("journal", [])
+          if len(journal) == 1 and not any(journal[0].values()):
+              journal.clear()
+
+          journal.append(
+              {
+                  "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                  "agent": "Orchestrator",
+                  "entry": "Dispatched task to Coder",
+                  "details": (
+                      f"Task folder: {task_dir.as_posix()}\n"
+                      f"Base branch: {os.environ['BASE_BRANCH']}\n"
+                      f"Workflow run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+                  ),
+              }
+          )
+
+          journal_path.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
+          PY
+
+      - name: Commit orchestrator journal entry
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- tasks; then
+            echo "No orchestration changes to commit"
+            exit 0
+          fi
+
+          git add tasks
+          git commit -m "chore(tasks): dispatch ${{ steps.select-task.outputs.task_name }} to coder"
+          git push origin HEAD:${BASE_BRANCH}
+
+      - name: Create issue for Copilot Coder
+        id: create-issue
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          TASK_NAME: ${{ steps.select-task.outputs.task_name }}
+          TASK_DIR: ${{ steps.select-task.outputs.task_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > issue-body.md <<EOF
+          Implement the repository task in \`${TASK_DIR}\`.
+
+          Required behavior:
+          - Follow \`docs/ai/agents/coder.md\`.
+          - Read \`${TASK_DIR}/description.md\` before coding.
+          - Create a \`feature/<feature-name>\` branch from \`${BASE_BRANCH}\`.
+          - Update \`${TASK_DIR}/agents-journal.json\` with coder events.
+          - Create \`${TASK_DIR}/coder.summary.md\`.
+          - Open a pull request to \`${BASE_BRANCH}\`.
+          - Include the line \`Task-Folder: ${TASK_DIR}\` in the pull request body.
+
+          The task description is below.
+
+          EOF
+          cat "${TASK_DIR}/description.md" >> issue-body.md
+
+          ISSUE_JSON=$(
+            jq -n \
+              --arg title "Coder: ${TASK_NAME}" \
+              --rawfile body issue-body.md \
+              --arg owner "${{ github.repository_owner }}" \
+              --arg repo "${{ github.event.repository.name }}" \
+              --arg base "${BASE_BRANCH}" \
+              '{
+                title: $title,
+                body: $body,
+                assignees: ["copilot-swe-agent[bot]"],
+                agent_assignment: {
+                  custom_agent: "coder",
+                  custom_instructions: "Act as the repository Coder. Follow docs/ai/agents/coder.md. Update the task journal and create coder.summary.md before opening the PR.",
+                  target_repo: ($owner + "/" + $repo),
+                  base_branch: $base,
+                  model: ""
+                }
+              }'
+          )
+
+          ISSUE_RESPONSE=$(gh api --method POST -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "repos/${GITHUB_REPOSITORY}/issues" --input - <<<"${ISSUE_JSON}")
+          ISSUE_NUMBER=$(jq -r '.number' <<<"${ISSUE_RESPONSE}")
+          ISSUE_URL=$(jq -r '.html_url' <<<"${ISSUE_RESPONSE}")
+
+          {
+            echo "issue_number=${ISSUE_NUMBER}"
+            echo "issue_url=${ISSUE_URL}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Write workflow summary
+        shell: bash
+        run: |
+          {
+            echo "## Dispatch Result"
+            echo
+            echo "- Task: \`${{ steps.select-task.outputs.task_dir }}\`"
+            echo "- Base branch: \`${BASE_BRANCH}\`"
+            echo "- Copilot issue: ${{ steps.create-issue.outputs.issue_url }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  qa-review:
+    if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    env:
+      BOT_GIT_NAME: ${{ vars.BOT_GIT_NAME }}
+      BOT_GIT_EMAIL: ${{ vars.BOT_GIT_EMAIL }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      BASE_BRANCH: ${{ github.base_ref }}
+      HEAD_BRANCH: ${{ github.head_ref }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "${BOT_GIT_NAME:-github-actions[bot]}"
+          git config user.email "${BOT_GIT_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
+
+      - name: Fetch base branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${BASE_BRANCH}" --depth=1
+
+      - name: Detect managed task
+        id: detect-task
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TASK_FILE=$(git diff --name-only "origin/${BASE_BRANCH}...HEAD" | grep -E '^tasks/[^/]+/coder\.summary\.md$' | head -n 1 || true)
+          if [ -z "${TASK_FILE}" ]; then
+            echo "managed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          TASK_DIR=$(dirname "${TASK_FILE}")
+          TASK_NAME=$(basename "${TASK_DIR}")
+
+          {
+            echo "managed=true"
+            echo "task_dir=${TASK_DIR}"
+            echo "task_name=${TASK_NAME}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Stop when PR is not for a managed task
+        if: steps.detect-task.outputs.managed != 'true'
+        shell: bash
+        run: |
+          echo "PR does not contain a managed task coder summary. Skipping QA workflow." >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Build QA context
+        if: steps.detect-task.outputs.managed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --binary "origin/${BASE_BRANCH}...HEAD" > pr.diff
+
+      - name: Run QA AI review
+        if: steps.detect-task.outputs.managed == 'true'
+        id: qa-ai
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TASK_DIR: ${{ steps.detect-task.outputs.task_dir }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+          from pathlib import Path
+
+          role_prompt = Path("docs/ai/agents/qa.md").read_text(encoding="utf-8")
+          task_dir = Path(os.environ["TASK_DIR"])
+          description = (task_dir / "description.md").read_text(encoding="utf-8")
+          coder_summary = (task_dir / "coder.summary.md").read_text(encoding="utf-8")
+          pr_diff = Path("pr.diff").read_text(encoding="utf-8", errors="replace")
+
+          system_prompt = (
+              "You are the QA role for a GitHub repository. "
+              "Follow the QA instructions exactly. "
+              "Return raw JSON only with keys decision, summary_markdown, review_body, journal_entry, journal_details. "
+              "decision must be approved or changes_requested."
+          )
+          user_prompt = f"""
+          QA role instructions:
+          {role_prompt}
+
+          Pull request:
+          - Number: {os.environ['PR_NUMBER']}
+          - URL: {os.environ['PR_URL']}
+          - Title: {os.environ['PR_TITLE']}
+
+          Pull request body:
+          {os.environ.get('PR_BODY', '')}
+
+          Task folder:
+          {task_dir.as_posix()}
+
+          Task description:
+          {description}
+
+          Coder summary:
+          {coder_summary}
+
+          Pull request diff:
+          {pr_diff}
+          """
+
+          payload = json.dumps(
+              {
+                  "model": "openai/gpt-4.1-mini",
+                  "messages": [
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt},
+                  ],
+                  "temperature": 0,
+              }
+          ).encode("utf-8")
+
+          req = urllib.request.Request(
+              "https://models.github.ai/inference/chat/completions",
+              data=payload,
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+              },
+              method="POST",
+          )
+
+          with urllib.request.urlopen(req, timeout=120) as resp:
+              data = json.loads(resp.read().decode("utf-8"))
+
+          content = data["choices"][0]["message"]["content"].strip()
+          if content.startswith("```"):
+              content = re.sub(r'^```(?:json)?\s*', '', content)
+              content = re.sub(r'\s*```$', '', content)
+          result = json.loads(content)
+
+          Path("qa-result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+          Path("qa.summary.generated.md").write_text(result["summary_markdown"].strip() + "\n", encoding="utf-8")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as fh:
+              fh.write(f"decision={result['decision']}\n")
+          PY
+
+      - name: Persist QA artifacts
+        if: steps.detect-task.outputs.managed == 'true'
+        shell: bash
+        env:
+          TASK_DIR: ${{ steps.detect-task.outputs.task_dir }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          task_dir = Path(os.environ["TASK_DIR"])
+          task_dir.joinpath("qa.summary.md").write_text(
+              Path("qa.summary.generated.md").read_text(encoding="utf-8"),
+              encoding="utf-8",
+          )
+
+          result = json.loads(Path("qa-result.json").read_text(encoding="utf-8"))
+          journal_path = task_dir / "agents-journal.json"
+          if journal_path.exists():
+              data = json.loads(journal_path.read_text(encoding="utf-8"))
+          else:
+              data = {"journal": []}
+
+          journal = data.setdefault("journal", [])
+          if len(journal) == 1 and not any(journal[0].values()):
+              journal.clear()
+
+          journal.append(
+              {
+                  "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                  "agent": "QA",
+                  "entry": result["journal_entry"],
+                  "details": result["journal_details"],
+              }
+          )
+
+          journal_path.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
+          PY
+
+      - name: Commit QA artifacts
+        if: steps.detect-task.outputs.managed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- tasks; then
+            echo "No QA artifact changes to commit"
+            exit 0
+          fi
+
+          git add tasks
+          git commit -m "chore(tasks): QA review for ${{ steps.detect-task.outputs.task_name }}"
+          git push origin HEAD:${HEAD_BRANCH}
+
+      - name: Submit QA pull request review
+        if: steps.detect-task.outputs.managed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          REVIEW_EVENT=REQUEST_CHANGES
+          if [ "${{ steps.qa-ai.outputs.decision }}" = "approved" ]; then
+            REVIEW_EVENT=APPROVE
+          fi
+
+          REVIEW_BODY=$(cat qa.summary.generated.md)
+          REVIEW_JSON=$(jq -n --arg body "${REVIEW_BODY}" --arg event "${REVIEW_EVENT}" '{body: $body, event: $event}')
+          gh api --method POST -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" --input - <<<"${REVIEW_JSON}" > /dev/null
+
+      - name: Merge when QA approves
+        if: steps.detect-task.outputs.managed == 'true' && steps.qa-ai.outputs.decision == 'approved'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr merge "${PR_NUMBER}" --squash --delete-branch --body "Merged automatically after AI QA approval."
+
+      - name: Write QA workflow summary
+        if: steps.detect-task.outputs.managed == 'true'
+        shell: bash
+        run: |
+          {
+            echo "## QA Result"
+            echo
+            echo "- Task: \`${{ steps.detect-task.outputs.task_dir }}\`"
+            echo "- Pull request: ${PR_URL}"
+            echo "- Decision: \`${{ steps.qa-ai.outputs.decision }}\`"
+            if [ "${{ steps.qa-ai.outputs.decision }}" = "approved" ]; then
+              echo "- Merge: completed with squash merge"
+            else
+              echo "- Merge: skipped because QA did not approve the PR"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

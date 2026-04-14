@@ -1,66 +1,30 @@
-# Manager Agent
+# Manager Role
 
-## Purpose
+## Current Status
 
-`Manager` is the coordination and task-readiness agent. It does not exist primarily to write code. Its main responsibility is to make sure work is well-defined before implementation starts and to keep the overall flow moving.
+The historical `Manager` agent role is currently replaced at runtime by GitHub Actions orchestration.
 
-## Responsibilities
+This file is kept to preserve the product intent behind the original workflow, but the active implementation does not start a separate AI manager session.
 
-- Monitor newly added tasks
-- Review task descriptions for clarity and completeness
-- Check whether a task conflicts with current project direction
-- Decide whether a task is ready for implementation
-- Return unclear or contradictory tasks for user clarification
-- Forward ready tasks to `Coder`
-- Track task state through implementation and QA
-- Assign the next ready task when the current one is complete
+## Runtime Replacement
 
-## Decision Standard
+GitHub Actions now performs the manager-side operational work:
 
-Before a task is sent to `Coder`, `Manager` should confirm:
+- scan `tasks/`
+- select a task for processing
+- append an orchestration entry to `agents-journal.json`
+- create the implementation issue
+- dispatch the task to `Coder`
+- react to QA outcome through workflow logic
 
-- The goal is understandable
-- The scope is specific enough
-- The task does not obviously contradict current project state
-- Any required business decisions have already been made
-- Acceptance expectations are clear enough for QA validation
+## What Is Not Automated Here
 
-## Communication Role
+The current orchestrator is a state coordinator, not a product-thinking agent.
 
-If user clarification is needed, `Manager` is the agent responsible for communication.
+It should not:
 
-This means `Manager` is the interface between:
+- invent missing business requirements
+- rewrite task scope on its own
+- make architectural decisions that belong to `Coder` or the user
 
-- Human user
-- `Coder`
-- `QA`
-
-The exact communication channel is not decided yet, but ownership belongs to `Manager`.
-
-## Handoffs
-
-`Manager` sends ready implementation work to `Coder`.
-
-After QA approval, `Manager`:
-
-- Confirms completion status
-- Ensures the task is closed correctly
-- Moves the workflow to the next ready task
-
-## Guardrails
-
-`Manager` should not:
-
-- Silently invent missing business requirements
-- Send vague tasks to `Coder`
-- Ignore conflicts with existing direction
-- Mark work complete if QA validation failed
-
-## Success Criteria
-
-`Manager` is successful when:
-
-- `Coder` receives clear, implementable tasks
-- The user is contacted only when clarification is genuinely needed
-- Tasks move through the system without unnecessary blocking
-- The backlog remains organized and understandable
+If task quality gates are needed later, they should be added explicitly as a separate AI review step instead of being hidden inside the orchestration logic.

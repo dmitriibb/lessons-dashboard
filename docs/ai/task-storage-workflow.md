@@ -1,8 +1,8 @@
-﻿# Task Storage Workflow
+# Task Storage Workflow
 
 ## Purpose
 
-This document defines how work items are stored in the repository and how agents should move tasks through the workflow.
+This document defines how work items are stored in the repository and how automation and AI roles move tasks through the workflow.
 
 The goal is to keep task state visible inside the repository itself, without requiring an external task tracker in the first version.
 
@@ -26,26 +26,33 @@ tasks/
   task-1-init-backed-service/
     description.md
     agents-journal.json
+    coder.summary.md
+    qa.summary.md
 ```
 
 ### tasks_done
 
 `tasks_done/` contains completed tasks.
 
-When a task is fully finished, the `Manager` agent is responsible for moving the whole task folder from `tasks/` into `tasks_done/`.
+Moving a fully completed task from `tasks/` to `tasks_done/` is not automated in the current workflow. That step can be added later once the merge flow is stable.
 
 ## Per-Task Files
 
-Each task folder contains two main files:
+Each task folder contains two required files:
 
 - `description.md`
 - `agents-journal.json`
+
+As the workflow progresses, the task folder should also gain:
+
+- `coder.summary.md`
+- `qa.summary.md`
 
 ## description.md
 
 `description.md` is the business and implementation request for one task.
 
-It should follow a consistent structure so `Manager`, `Coder`, and `QA` can all read the same intent.
+It should follow a consistent structure so the orchestrator, `Coder`, and `QA` can all read the same intent.
 
 The current template sections are:
 
@@ -62,7 +69,7 @@ Template:
 
 `agents-journal.json` is the execution log for that task.
 
-It is used to keep a machine-readable history of what each agent did and when.
+It is used to keep a machine-readable history of what each workflow stage did and when.
 
 Each journal entry records:
 
@@ -75,18 +82,41 @@ Template:
 
 - [templates/agents-journal.template.json](/c:/projects/lessons-dashboard/docs/ai/templates/agents-journal.template.json)
 
-## Agent Responsibilities
+## Summary Files
 
-### Manager
+### coder.summary.md
 
-`Manager` is responsible for:
+This file is created by `Coder` and should summarize:
+
+- what was implemented
+- major technical notes or assumptions
+
+Template:
+
+- [templates/coder.summary.template.md](/c:/projects/lessons-dashboard/docs/ai/templates/coder.summary.template.md)
+
+### qa.summary.md
+
+This file is created by `QA` and should summarize:
+
+- the review decision
+- the main review findings
+- the next expected action
+
+Template:
+
+- [templates/qa.summary.template.md](/c:/projects/lessons-dashboard/docs/ai/templates/qa.summary.template.md)
+
+## Role Responsibilities
+
+### GitHub Actions Orchestrator
+
+The orchestrator is responsible for:
 
 - scanning task folders in `tasks/`
-- reading `description.md`
-- deciding whether a task is clear enough
-- adding journal entries when the task is picked up
-- forwarding ready work to `Coder`
-- moving the task folder to `tasks_done/` after the task is fully completed
+- selecting a task for dispatch
+- adding a journal entry when the task is picked up
+- forwarding the task to `Coder`
 
 ### Coder
 
@@ -94,6 +124,7 @@ Template:
 
 - reading the task description
 - adding journal entries when implementation starts
+- creating `coder.summary.md`
 - adding journal entries when implementation is handed to `QA`
 
 ### QA
@@ -101,6 +132,7 @@ Template:
 `QA` is responsible for:
 
 - adding journal entries when review starts
+- creating `qa.summary.md`
 - adding journal entries when the review is approved or when changes are requested
 
 ## Expected Flow
@@ -112,17 +144,15 @@ The user creates a new folder under `tasks/` and adds:
 - `description.md`
 - `agents-journal.json`
 
-### 2. Manager picks up the task
+### 2. Orchestrator picks up the task
 
-`Manager` reads the task and writes a journal event that the task was picked up.
-
-If the task is clear and ready, `Manager` writes a journal entry that it is being passed to `Coder`.
-
-If the task is not clear, `Manager` writes that it is blocked and communicates with the user.
+The orchestrator writes a journal event that the task was picked up and dispatched to `Coder`.
 
 ### 3. Coder starts implementation
 
 `Coder` writes a journal event that implementation has started.
+
+`Coder` also writes `coder.summary.md` before opening the PR.
 
 When implementation is complete, `Coder` writes a journal event that the task is being passed to `QA`.
 
@@ -133,19 +163,14 @@ When implementation is complete, `Coder` writes a journal event that the task is
 If changes are needed:
 
 - `QA` adds a journal entry describing the result
+- `QA` updates `qa.summary.md`
 - the task returns to `Coder`
 
 If the task is approved:
 
 - `QA` adds a journal entry that the task passed QA
-- the task returns to `Manager` for completion handling
-
-### 5. Manager closes the task
-
-After QA approval and workflow completion:
-
-- `Manager` adds the final journal entry
-- `Manager` moves the full task folder from `tasks/` to `tasks_done/`
+- `QA` updates `qa.summary.md`
+- the workflow merges the PR into `dev`
 
 ## Journal Entry Style
 

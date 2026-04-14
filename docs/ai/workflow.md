@@ -1,20 +1,20 @@
-﻿# AI Workflow
+# AI Workflow
 
 ## Goal
 
-This document describes the intended agentic delivery workflow for the project.
+This document describes the current GitHub-based agentic delivery workflow for the project.
 
-The main idea is that the human user defines tasks, while AI agents process those tasks in a controlled flow inside GitHub-based automation. The user should be able to manage work with minimal dependence on a local laptop and should eventually be able to control the process from a phone or tablet.
+The user defines tasks in the repository. GitHub Actions orchestrates the queue, GitHub Copilot cloud agent implements tasks as `Coder`, and an AI-driven QA step reviews the resulting PR before merge. The process should work without relying on the user's local machine.
 
-## Agents
+## Runtime Roles
 
-The workflow uses three agents:
+The current runtime uses:
 
-- `Manager`
+- `GitHub Actions Orchestrator`
 - `Coder`
 - `QA`
 
-Detailed role definitions live in:
+Role references:
 
 - [agents/manager.md](/c:/projects/lessons-dashboard/docs/ai/agents/manager.md)
 - [agents/coder.md](/c:/projects/lessons-dashboard/docs/ai/agents/coder.md)
@@ -25,136 +25,98 @@ Detailed role definitions live in:
 
 ### 1. User Creates Tasks
 
-The user prepares a list of tasks and pushes them into the GitHub repository.
+The user prepares tasks under `tasks/`, one folder per task.
 
-Tasks are stored in the repository under the `tasks/` directory, one folder per task.
+Each task folder must contain:
 
-The exact repository task flow is documented in:
+- `description.md`
+- `agents-journal.json`
 
-- [task-storage-workflow.md](/c:/projects/lessons-dashboard/docs/ai/task-storage-workflow.md)
+Each completed implementation cycle should also produce:
 
-### 2. Cloud Worker Starts
+- `coder.summary.md`
+- `qa.summary.md`
 
-The user triggers a GitHub-based worker or automation run.
+### 2. Orchestrator Starts
 
-The exact execution platform is still to be finalized, but the intended direction is GitHub-hosted automation rather than relying on the user's personal device.
+The user starts the process with a GitHub workflow trigger.
 
-### 3. Manager Reviews Tasks
+The current runtime entry point is `workflow_dispatch`. Future triggers may include `push` to `tasks/**` or scheduled runs.
 
-`Manager` checks each new task and decides whether it is ready for implementation.
+### 3. Orchestrator Selects a Task
 
-The review includes:
+The GitHub Actions orchestrator:
 
-- Is the task description clear enough?
-- Does the task contradict current behavior or existing architecture?
-- Does the task need user clarification?
-- Is the task small and specific enough for implementation?
+- picks a task folder
+- records the handoff in `agents-journal.json`
+- creates a GitHub issue for implementation
+- assigns the issue to the GitHub Copilot cloud agent configured as `Coder`
 
-If anything is unclear, `Manager` is responsible for communicating with the user.
+The orchestrator is responsible for queue handling and state transitions. It does not make product decisions.
 
-The exact communication channel is not decided yet.
+### 4. Coder Implements the Task
 
-### 4. Manager Dispatches Ready Tasks
+`Coder` receives the task through GitHub Copilot cloud agent and must:
 
-If a task is ready, `Manager` forwards it to `Coder`.
+- create a `feature/<feature-name>` branch from `dev`
+- implement the task
+- update the task journal
+- create `coder.summary.md`
+- open a PR from the feature branch to `dev`
 
-Tasks should normally be handled one by one unless a future workflow explicitly supports safe parallel implementation.
+### 5. QA Reviews the PR
 
-### 5. Coder Implements the Task
+When a PR targeting `dev` is opened for a managed task, the QA workflow runs.
 
-`Coder` performs the implementation work:
+The QA step uses the `QA` role instructions together with:
 
-- Creates a feature branch from `dev`
-- Writes the code
-- Adds or updates tests where appropriate
-- Opens a PR from the feature branch to `dev`
+- the original `description.md`
+- the PR diff
+- the coder summary
 
-`Coder` should optimize for:
+The QA step must:
 
-- Readability
-- Maintainability
-- Robustness
-- Security
-- Performance
+- create or update `qa.summary.md`
+- append a QA journal entry
+- produce a binary decision for the workflow: `approved` or `changes_requested`
 
-### 6. QA Reviews the PR
+### 6. Merge Decision
 
-`QA` validates the implementation before merge.
+If QA returns `approved`:
 
-The review includes:
+- the workflow squash-merges the PR into `dev`
 
-- PR review of the code changes
-- Validation of business logic
-- Checking major edge cases
-- Confirming the task was actually solved
+If QA returns `changes_requested`:
 
-The exact environment for preview deployment or branch testing is not finalized yet.
-
-### 7. QA Outcome
-
-If `QA` finds issues:
-
-- `QA` reports them directly to `Coder`
-- `Coder` fixes the issues
-- `QA` reviews again
-
-If `QA` approves:
-
-- `QA` signals successful validation
-- The task returns to `Manager` for workflow completion
-
-### 8. Merge and Handover
-
-After successful QA:
-
-- `Manager` confirms the workflow state
-- `Coder` merges the PR according to the Git workflow rules
-- `Manager` marks the task as complete
-- `Manager` moves the task folder from `tasks/` to `tasks_done/`
-- `Manager` assigns the next ready task
-
-### 9. Waiting State
-
-If no tasks are available, or if remaining tasks require human input:
-
-- Agents notify the user
-- Agents wait for a response
-
-### 10. Idle Shutdown
-
-If all agents remain idle for a defined period, such as 10 to 15 minutes:
-
-- The worker should stop
-- Resource usage should be minimized
-
-This is an explicit design goal to avoid paying for unnecessary always-on automation.
+- the workflow does not merge the PR
+- the workflow output must clearly state that the PR was not merged
 
 ## Workflow Rules
 
-The current intended rules are:
+The current rules are:
 
-- `Manager` is the gatekeeper for task readiness.
-- `Coder` should not invent product decisions that require user input.
-- `QA` should validate both correctness and task completion, not only code style.
-- Unclear requirements should go back to the user through `Manager`.
+- Task queue orchestration is handled by GitHub Actions.
+- `Coder` must follow [agents/coder.md](/c:/projects/lessons-dashboard/docs/ai/agents/coder.md).
+- `QA` must follow [agents/qa.md](/c:/projects/lessons-dashboard/docs/ai/agents/qa.md).
+- Both `Coder` and `QA` must update `agents-journal.json`.
 - Merge to `main` is outside the scope of agent work.
+- Merge to `dev` must use squash merge.
 
-## Open Workflow Questions
+## Implementation Notes
 
-These points still need design decisions:
+The workflow is intentionally event-driven:
 
-- How the `Manager` communicates with the user
-- How PR previews or feature-branch deployments are exposed to `QA`
-- Whether agents run as separate jobs, separate services, or coordinated steps in one pipeline
-- How agent state is persisted between workflow runs
-- How idle detection is implemented in GitHub-based automation
+- one run dispatches work to `Coder`
+- another run reacts to the resulting PR and performs QA
+
+This avoids long-running idle jobs while still keeping the full flow in GitHub.
 
 ## Expected Benefits
 
 If implemented well, this workflow should provide:
 
-- Clear separation of responsibility
-- Better task quality before coding starts
-- Stronger code quality control
-- Reduced need for the user to sit at a laptop
-- A path toward mobile-first task management for the human user
+- GitHub-native task dispatch
+- AI-driven implementation
+- AI-driven review before merge
+- visible task state in the repository
+- low idle cost because workflows run only on demand

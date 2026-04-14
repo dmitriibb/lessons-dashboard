@@ -32,14 +32,14 @@ The repository uses three branch categories:
 
 ### 1. Start Work
 
-When `Coder` starts a new ready task:
+When `Coder` starts a new ready task dispatched by the orchestrator:
 
 - Create a new branch from `dev`
 - Use the `feature/<feature-name>` naming convention
 
 ### 2. Implement
 
-`Coder` performs the implementation on the feature branch and pushes the branch to the remote repository.
+`Coder` performs the implementation on the feature branch, updates the task artifacts, and pushes the branch to the remote repository.
 
 ### 3. Open PR
 
@@ -47,6 +47,7 @@ When `Coder` starts a new ready task:
 
 - Source: `feature/<feature-name>`
 - Target: `dev`
+- The PR should clearly identify the originating task folder
 
 ### 4. QA Review
 
@@ -54,8 +55,8 @@ When `Coder` starts a new ready task:
 
 Possible outcomes:
 
-- Request changes
-- Approve
+- `changes_requested`
+- `approved`
 
 ### 5. Fixes if Needed
 
@@ -66,7 +67,7 @@ If changes are required:
 
 ### 6. Merge
 
-If the PR is approved:
+If the PR is approved by the QA workflow:
 
 - Merge from feature branch to `dev`
 - Use squash merge
@@ -82,9 +83,9 @@ Squash merge is preferred so that `dev` reflects one clean commit per completed 
 
 ## Why This Flow
 
-This git model supports the intended agent workflow:
+This git model supports the intended workflow:
 
-- `Manager` can reason about task boundaries
+- the orchestrator can reason about task boundaries
 - `Coder` gets isolated implementation branches
 - `QA` reviews self-contained PRs
 - `dev` remains readable because of squash merges
@@ -94,7 +95,7 @@ This git model supports the intended agent workflow:
 
 The following points still need future decisions:
 
-- Who is allowed to merge the PR in practice: `Coder`, `Manager`, or automation
+- Whether QA approval should eventually require automated tests in addition to AI review
 - Whether protected branch rules will be enforced on `dev`
 - Whether additional branch prefixes will be needed later, such as `fix/` or `chore/`
 - How release promotion from `dev` to `main` will be handled

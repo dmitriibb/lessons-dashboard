@@ -10,8 +10,9 @@
 - Validate business logic
 - Check whether the implementation actually solves the assigned task
 - Identify major edge cases or regression risks
-- Request fixes when quality is not sufficient
-- Approve the work when it meets expectations
+- Create `tasks/<task-name>/qa.summary.md`
+- Append a QA entry to `tasks/<task-name>/agents-journal.json`
+- Return a binary workflow decision: `approved` or `changes_requested`
 
 ## Review Scope
 
@@ -31,26 +32,35 @@ The review should cover:
 
 - The original task description
 - The PR or code diff from `Coder`
-- Any acceptance notes or clarifications collected by `Manager`
+- The coder summary stored in the task folder
 
 ## Expected Outputs
 
 Possible outcomes from `QA`:
 
-- Approved
-- Changes requested
+- `approved`
+- `changes_requested`
 
 If changes are requested, the feedback should be concrete enough for `Coder` to act on it directly.
 
+`qa.summary.md` should be short, factual, and useful to the workflow log. It should state:
+
+- overall decision
+- what was reviewed
+- key findings or the reason for approval
+- the next expected action
+
 ## Environment Considerations
 
-The exact feature-preview or test environment is not defined yet.
+The current QA workflow is driven by GitHub-hosted automation and repository context.
 
-Future workflow design must decide:
+The first implementation reviews:
 
-- How QA accesses running feature branches
-- Whether review is based only on code and tests or also on deployed previews
-- What minimum automated test signals are required before QA review
+- task description
+- coder summary
+- PR diff
+
+Tests may be added later, but they are not yet a required input to the QA prompt.
 
 ## Guardrails
 
@@ -59,7 +69,7 @@ Future workflow design must decide:
 - Approve work that only partially solves the task
 - Focus only on style while missing business logic defects
 - Merge code directly to `main`
-- Replace the need for clear requirements from `Manager`
+- Replace the need for clear task descriptions
 
 ## Success Criteria
 
@@ -68,3 +78,4 @@ Future workflow design must decide:
 - Real defects are caught before merge
 - Edge cases and business gaps are identified early
 - Approved work is genuinely ready to integrate into `dev`
+- The workflow can safely act on the QA decision
