@@ -1,83 +1,239 @@
-name: Agent Orchestrator
+name: Manager Dispatch
+
+run-name: Dispatch ${{ inputs.task_name || 'next task' }} to Coder
 
 on:
   workflow_dispatch:
     inputs:
-      prompt:
-        description: Prompt to send to the Manager
+      task_name:
+        description: Optional task folder name under tasks/.
         required: false
-        default: Pick up only task-1-init-backed-service and tell me whether it is ready for implementation.
+        type: string
+      coder_model:
+        description: Model for the Coder cloud agent.
+        required: true
+        default: Auto
+        type: choice
+        options:
+          - Auto
+          - Claude Sonnet 4.5
+          - Claude Opus 4.7
+          - GPT-5.2-Codex
+      qa_model:
+        description: Model reserved for the QA cloud agent handoff.
+        required: true
+        default: Auto
+        type: choice
+        options:
+          - Auto
+          - Claude Sonnet 4.5
+          - Claude Opus 4.7
+          - GPT-5.2-Codex
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
   issues: write
-  models: read
+  pull-requests: write
+
+concurrency:
+  group: manager-dispatch
+  cancel-in-progress: false
 
 jobs:
-  manager:
+  dispatch:
     runs-on: ubuntu-latest
-
     env:
-      BOT_GIT_NAME: ${{ vars.BOT_GIT_NAME }}
-      BOT_GIT_EMAIL: ${{ vars.BOT_GIT_EMAIL }}
-      MANAGER_PROMPT: ${{ inputs.prompt }}
+      BASE_BRANCH: dev
+      TASK_NAME: ${{ inputs.task_name }}
+      CODER_MODEL: ${{ inputs.coder_model }}
+      QA_MODEL: ${{ inputs.qa_model }}
+      ASSIGNMENT_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+      GH_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository at dev
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
 
-      - name: Validate required variables
+      - name: Validate workflow prerequisites
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -z "${BOT_GIT_NAME}" ]; then
-            echo "Missing repository variable BOT_GIT_NAME"
+          if [[ -z "${ASSIGNMENT_TOKEN}" ]]; then
+            echo "Missing secret COPILOT_ASSIGNMENT_TOKEN"
             exit 1
           fi
 
-          if [ -z "${BOT_GIT_EMAIL}" ]; then
-            echo "Missing repository variable BOT_GIT_EMAIL"
+          if [[ ! -d tasks ]]; then
+            echo "tasks/ directory is missing on ${BASE_BRANCH}"
             exit 1
           fi
 
-          if [ -z "${MANAGER_PROMPT}" ]; then
-            echo "Missing workflow input prompt"
-            exit 1
-          fi
-
-      - name: Configure git bot identity
+      - name: Pick task
+        id: pick
+        shell: bash
         run: |
-          git config user.name "${BOT_GIT_NAME}"
-          git config user.email "${BOT_GIT_EMAIL}"
-          git config --get user.name
-          git config --get user.email
+          set -euo pipefail
 
-      - name: Run Manager agent
+          has_open_dispatch_issue() {
+            local candidate="$1"
+            local count
+
+            count="$(gh issue list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --state open \
+              --search "\"Coder task: ${candidate}\" in:title" \
+              --limit 1 \
+              --json number \
+              --jq 'length')"
+
+            [[ "${count}" != "0" ]]
+          }
+
+          selected_task=""
+
+          if [[ -n "${TASK_NAME}" ]]; then
+            if [[ ! -d "tasks/${TASK_NAME}" ]]; then
+              echo "Requested task tasks/${TASK_NAME} does not exist"
+              exit 1
+            fi
+
+            if [[ ! -f "tasks/${TASK_NAME}/description.md" ]]; then
+              echo "Requested task tasks/${TASK_NAME} is missing description.md"
+              exit 1
+            fi
+
+            selected_task="${TASK_NAME}"
+          else
+            while IFS= read -r task_dir; do
+              candidate="$(basename "${task_dir}")"
+
+              if [[ ! -f "${task_dir}/description.md" ]]; then
+                continue
+              fi
+
+              if has_open_dispatch_issue "${candidate}"; then
+                continue
+              fi
+
+              selected_task="${candidate}"
+              break
+            done < <(find tasks -mindepth 1 -maxdepth 1 -type d | sort)
+          fi
+
+          if [[ -z "${selected_task}" ]]; then
+            echo "No dispatchable task was found in tasks/"
+            exit 1
+          fi
+
+          echo "task_name=${selected_task}" >> "${GITHUB_OUTPUT}"
+          echo "task_path=tasks/${selected_task}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or reuse Coder dispatch issue
+        id: issue
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 scripts/agents/manager.py | tee manager-output.txt
-
-      - name: Commit journal updates
-        shell: bash
+          TASK_NAME: ${{ steps.pick.outputs.task_name }}
+          TASK_PATH: ${{ steps.pick.outputs.task_path }}
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- tasks; then
-            echo "No task journal updates were created"
+          existing_url="$(gh issue list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --state open \
+            --search "\"Coder task: ${TASK_NAME}\" in:title" \
+            --limit 1 \
+            --json url \
+            --jq '.[0].url // empty')"
+
+          if [[ -n "${existing_url}" ]]; then
+            echo "issue_url=${existing_url}" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          git add tasks
-          git commit -m "chore: manager review task queue"
-          git push origin HEAD:${{ github.ref_name }}
+          description="$(cat "${TASK_PATH}/description.md")"
 
-      - name: Upload manager output
-        uses: actions/upload-artifact@v4
-        with:
-          name: manager-output
-          path: manager-output.txt
+          custom_instructions="$(cat <<EOF
+Use the repository custom agent \"coder\".
+Read docs/ai/agents/coder.md before making changes.
+Base branch: ${BASE_BRANCH}
+Task folder: ${TASK_PATH}
+
+Required outputs:
+- create or update ${TASK_PATH}/code.summary.md
+- open a PR to ${BASE_BRANCH}
+- include the exact PR description line: Task-Folder: ${TASK_PATH}
+
+Reserved QA model for later handoff: ${QA_MODEL}
+Do not write or rely on agents-journal.json.
+EOF
+          )"
+
+          issue_body="$(cat <<EOF
+Manager selected the next task for the Coder cloud agent.
+
+Task folder: ${TASK_PATH}
+Base branch: ${BASE_BRANCH}
+Coder model: ${CODER_MODEL}
+Reserved QA model: ${QA_MODEL}
+
+Task description:
+
+${description}
+
+Coder requirements:
+- Follow docs/ai/agents/coder.md.
+- Create code.summary.md in the task folder.
+- Open a PR from a feature branch to ${BASE_BRANCH}.
+- Include the exact PR description line: Task-Folder: ${TASK_PATH}
+EOF
+          )"
+
+          payload="$(jq -n \
+            --arg title "Coder task: ${TASK_NAME}" \
+            --arg body "${issue_body}" \
+            --arg assignee "copilot-swe-agent[bot]" \
+            --arg target_repo "${GITHUB_REPOSITORY}" \
+            --arg base_branch "${BASE_BRANCH}" \
+            --arg custom_instructions "${custom_instructions}" \
+            --arg custom_agent "coder" \
+            --arg model "${CODER_MODEL}" \
+            '{
+              title: $title,
+              body: $body,
+              assignees: [$assignee],
+              agent_assignment: {
+                target_repo: $target_repo,
+                base_branch: $base_branch,
+                custom_instructions: $custom_instructions,
+                custom_agent: $custom_agent,
+                model: $model
+              }
+            }')"
+
+          response="$(gh api \
+            --method POST \
+            -H \"Accept: application/vnd.github+json\" \
+            -H \"X-GitHub-Api-Version: 2022-11-28\" \
+            "/repos/${GITHUB_REPOSITORY}/issues" \
+            --input - <<< "${payload}")"
+
+          issue_url="$(jq -r '.html_url' <<< "${response}")"
+
+          echo "issue_url=${issue_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Write workflow summary
+        shell: bash
+        run: |
+          {
+            echo "### Manager Dispatch"
+            echo
+            echo "- Task: ${TASK_NAME:-${{ steps.pick.outputs.task_name }}}"
+            echo "- Issue: ${{ steps.issue.outputs.issue_url }}"
+            echo "- Base branch: ${BASE_BRANCH}"
+            echo "- Coder model: ${CODER_MODEL}"
+            echo "- QA model: ${QA_MODEL}"
+          } >> "${GITHUB_STEP_SUMMARY}"

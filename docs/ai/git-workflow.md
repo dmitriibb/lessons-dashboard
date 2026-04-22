@@ -5,8 +5,10 @@
 The repository uses three branch categories:
 
 - `main` for the stable version
-- `dev` for active integration and ongoing development
-- `feature/<feature-name>` for task-specific implementation branches
+- `dev` for active integration and task execution
+- `feature/<task-name>` for task-specific implementation branches
+
+Task folders that are ready to run through the agent workflow must already exist on `dev` before `Manager` dispatches them.
 
 ## Rules
 
@@ -19,82 +21,70 @@ The repository uses three branch categories:
 ### dev
 
 - `dev` is the integration branch.
-- It may temporarily contain work in progress or breaking changes.
-- Feature work is merged into `dev` after review.
+- `Manager` dispatches Coder work against `dev`.
+- `Coder` PRs always target `dev`.
+- Completed task folders are moved from `tasks/` to `tasks_done/` on `dev` after the PR is merged.
 
 ### feature branches
 
-- Each new implementation task starts from `dev`.
-- Branch naming should follow `feature/<feature-name>`.
-- A feature branch should be scoped to one task or one tightly related unit of work.
+- Each implementation task starts from `dev`.
+- Branch naming should follow `feature/<task-name>` or another narrow name derived from one task folder.
+- A feature branch is scoped to one task.
 
 ## Standard Flow
 
-### 1. Start Work
+### 1. Dispatch
 
-When `Coder` starts a new ready task:
-
-- Create a new branch from `dev`
-- Use the `feature/<feature-name>` naming convention
+`Manager` assigns one task to Copilot and forces the run to start from `dev`.
 
 ### 2. Implement
 
-`Coder` performs the implementation on the feature branch and pushes the branch to the remote repository.
+`Coder` creates a feature branch from `dev`, implements the task, and writes `tasks/<task-name>/code.summary.md` on that branch.
 
 ### 3. Open PR
 
 `Coder` opens a pull request:
 
-- Source: `feature/<feature-name>`
+- Source: `feature/<task-name>`
 - Target: `dev`
+
+The PR description must contain the exact marker:
+
+`Task-Folder: tasks/<task-name>`
+
+That marker is required by the post-merge task completion workflow.
 
 ### 4. QA Review
 
-`QA` reviews the PR and validates the implementation.
+`QA` reviews the same PR, writes `tasks/<task-name>/qa.summary.md`, and then either:
 
-Possible outcomes:
+- requests changes on the PR
+- or merges the PR to `dev`
 
-- Request changes
-- Approve
+### 5. Merge
 
-### 5. Fixes if Needed
+When the PR is acceptable, the merge strategy is squash merge into `dev`.
 
-If changes are required:
+Squash merge keeps `dev` readable by representing one completed task as one integration commit.
 
-- `Coder` updates the same feature branch
-- `QA` reviews again
+### 6. Post-Merge Completion
 
-### 6. Merge
-
-If the PR is approved:
-
-- Merge from feature branch to `dev`
-- Use squash merge
-
-Squash merge is preferred so that `dev` reflects one clean commit per completed feature rather than a long sequence of small implementation commits.
+After the PR to `dev` is merged, a GitHub Actions workflow moves `tasks/<task-name>` to `tasks_done/<task-name>`.
 
 ## Merge Constraints
 
 - Agents never merge to `main`
-- Agents should not bypass QA review
-- Feature branches should not be reused for unrelated work
-- If a task changes meaning substantially, a new branch should be considered
+- `Coder` does not merge its own PR
+- `QA` must not merge before `qa.summary.md` is committed on the PR branch
+- Feature branches are not reused for unrelated work
+- `agents-journal.json` is not part of the current merge contract
 
 ## Why This Flow
 
-This git model supports the intended agent workflow:
+This git model supports the current GitHub-based agent flow:
 
-- `Manager` can reason about task boundaries
-- `Coder` gets isolated implementation branches
-- `QA` reviews self-contained PRs
-- `dev` remains readable because of squash merges
+- `Manager` stays deterministic and lightweight
+- `Coder` gets an isolated branch from `dev`
+- `QA` works against one self-contained PR
+- `dev` remains the single integration branch for active tasks
 - `main` stays protected as the stable branch
-
-## Open Git Questions
-
-The following points still need future decisions:
-
-- Who is allowed to merge the PR in practice: `Coder`, `Manager`, or automation
-- Whether protected branch rules will be enforced on `dev`
-- Whether additional branch prefixes will be needed later, such as `fix/` or `chore/`
-- How release promotion from `dev` to `main` will be handled

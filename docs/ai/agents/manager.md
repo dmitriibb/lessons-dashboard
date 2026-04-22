@@ -2,65 +2,56 @@
 
 ## Purpose
 
-`Manager` is the coordination and task-readiness agent. It does not exist primarily to write code. Its main responsibility is to make sure work is well-defined before implementation starts and to keep the overall flow moving.
+`Manager` is not a cloud AI agent in this repository.
+
+`Manager` is a small GitHub Actions dispatch step that selects one task and hands it to `Coder`.
 
 ## Responsibilities
 
-- Monitor newly added tasks
-- Review task descriptions for clarity and completeness
-- Check whether a task conflicts with current project direction
-- Decide whether a task is ready for implementation
-- Return unclear or contradictory tasks for user clarification
-- Forward ready tasks to `Coder`
-- Track task state through implementation and QA
-- Assign the next ready task when the current one is complete
+- Read active task folders under `tasks/`
+- Honor an optional requested `task_name`
+- Require `description.md`
+- Skip tasks that already have an open `Coder task:` dispatch issue
+- Create and assign a GitHub issue to `copilot-swe-agent[bot]`
+- Pass `custom_agent: coder`
+- Pass the selected `coder_model`
+- Record the selected `qa_model` for the later QA handoff
+- Force the cloud-agent task to branch from `dev`
 
-## Decision Standard
+## Explicit Non-Responsibilities
 
-Before a task is sent to `Coder`, `Manager` should confirm:
+`Manager` does not:
 
-- The goal is understandable
-- The scope is specific enough
-- The task does not obviously contradict current project state
-- Any required business decisions have already been made
-- Acceptance expectations are clear enough for QA validation
+- run an LLM to decide whether a task is ready
+- write or update `agents-journal.json`
+- change code
+- review pull requests
+- move task folders to `tasks_done/`
 
-## Communication Role
+## Dispatch Contract
 
-If user clarification is needed, `Manager` is the agent responsible for communication.
+The issue created by `Manager` must tell `Coder` to:
 
-This means `Manager` is the interface between:
-
-- Human user
-- `Coder`
-- `QA`
-
-The exact communication channel is not decided yet, but ownership belongs to `Manager`.
-
-## Handoffs
-
-`Manager` sends ready implementation work to `Coder`.
-
-After QA approval, `Manager`:
-
-- Confirms completion status
-- Ensures the task is closed correctly
-- Moves the workflow to the next ready task
+1. branch from `dev`
+2. implement only the selected task
+3. create `tasks/<task-name>/code.summary.md`
+4. open a PR to `dev`
+5. include `Task-Folder: tasks/<task-name>` in the PR description
 
 ## Guardrails
 
 `Manager` should not:
 
-- Silently invent missing business requirements
-- Send vague tasks to `Coder`
-- Ignore conflicts with existing direction
-- Mark work complete if QA validation failed
+- invent product decisions
+- interpret vague requirements with an LLM
+- assign more than one active task when one is enough
+- update legacy journals just to track state
 
 ## Success Criteria
 
 `Manager` is successful when:
 
-- `Coder` receives clear, implementable tasks
-- The user is contacted only when clarification is genuinely needed
-- Tasks move through the system without unnecessary blocking
-- The backlog remains organized and understandable
+- exactly one valid task is selected
+- Coder receives deterministic inputs
+- the chosen base branch is `dev`
+- the selected models are captured for the execution flow

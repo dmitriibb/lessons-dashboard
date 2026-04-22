@@ -1,0 +1,116 @@
+name: Complete Task On Merge
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - dev
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  complete:
+    if: ${{ github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    env:
+      BOT_GIT_NAME: ${{ vars.BOT_GIT_NAME }}
+      BOT_GIT_EMAIL: ${{ vars.BOT_GIT_EMAIL }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Move task folder to tasks_done
+        id: move
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          task_path="$(printf '%s\n' "${PR_BODY}" | sed -n 's/^Task-Folder:[[:space:]]*\(tasks\/[^[:space:]]\+\)$/\1/p' | head -n 1)"
+
+          if [[ -z "${task_path}" ]]; then
+            echo "No Task-Folder marker found in PR body; nothing to move."
+            echo "task_name=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          task_name="${task_path#tasks/}"
+
+          if [[ ! -d "${task_path}" ]]; then
+            echo "Task folder ${task_path} does not exist on dev; nothing to move."
+            echo "task_name=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          mkdir -p tasks_done
+
+          if [[ -e "tasks_done/${task_name}" ]]; then
+            echo "Target tasks_done/${task_name} already exists"
+            exit 1
+          fi
+
+          mv "${task_path}" "tasks_done/${task_name}"
+
+          echo "task_name=${task_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Commit and push task move
+        if: ${{ steps.move.outputs.task_name != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bot_name="${BOT_GIT_NAME:-github-actions[bot]}"
+          bot_email="${BOT_GIT_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
+
+          git config user.name "${bot_name}"
+          git config user.email "${bot_email}"
+
+          git add -A "tasks/${{ steps.move.outputs.task_name }}" "tasks_done/${{ steps.move.outputs.task_name }}"
+
+          if git diff --cached --quiet; then
+            echo "No task move to commit"
+            exit 0
+          fi
+
+          git commit -m "chore: archive ${{ steps.move.outputs.task_name }} after merge"
+          git push origin HEAD:dev
+
+      - name: Close matching Coder issue
+        if: ${{ steps.move.outputs.task_name != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          issue_url="$(gh issue list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --state open \
+            --search "\"Coder task: ${{ steps.move.outputs.task_name }}\" in:title" \
+            --limit 1 \
+            --json url \
+            --jq '.[0].url // empty')"
+
+          if [[ -n "${issue_url}" ]]; then
+            gh issue close "${issue_url}" --comment "Closed automatically after PR #${PR_NUMBER} merged and the task folder was moved to tasks_done."
+          fi
+
+      - name: Write workflow summary
+        if: ${{ steps.move.outputs.task_name != '' }}
+        shell: bash
+        run: |
+          {
+            echo "### Task Completed"
+            echo
+            echo "- PR: ${PR_URL}"
+            echo "- Task: tasks/${{ steps.move.outputs.task_name }}"
+            echo "- Result: moved to tasks_done/${{ steps.move.outputs.task_name }}"
+          } >> "${GITHUB_STEP_SUMMARY}"

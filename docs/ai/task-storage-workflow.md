@@ -2,9 +2,9 @@
 
 ## Purpose
 
-This document defines how work items are stored in the repository and how agents should move tasks through the workflow.
+This document defines how work items are stored in the repository and how the current GitHub agent workflow moves them through the lifecycle.
 
-The goal is to keep task state visible inside the repository itself, without requiring an external task tracker in the first version.
+The current workflow keeps task state visible inside the repository through task folders, PRs, and summary files. It does not rely on a machine-written task journal.
 
 ## Directory Structure
 
@@ -19,33 +19,48 @@ The repository uses two root-level directories for task lifecycle management:
 
 Each task must have its own folder inside `tasks/`.
 
-Example:
+Minimal example:
 
 ```text
 tasks/
   task-1-init-backed-service/
     description.md
-    agents-journal.json
 ```
 
 ### tasks_done
 
 `tasks_done/` contains completed tasks.
 
-When a task is fully finished, the `Manager` agent is responsible for moving the whole task folder from `tasks/` into `tasks_done/`.
+When a PR to `dev` is merged successfully, the `Complete Task On Merge` workflow moves the whole task folder from `tasks/` into `tasks_done/`.
 
 ## Per-Task Files
 
-Each task folder contains two main files:
+### Required before dispatch
+
+Each new task folder must contain:
 
 - `description.md`
+
+### Generated during implementation and review
+
+The workflow expects the agents to add these files on the feature branch before merge:
+
+- `code.summary.md`
+- `qa.summary.md`
+
+### Legacy optional files
+
+Older task folders may also contain:
+
 - `agents-journal.json`
+
+The current workflow ignores this file. It can stay in the repository for historical context, but it is no longer required and should not be updated by `Manager`, `Coder`, or `QA`.
 
 ## description.md
 
 `description.md` is the business and implementation request for one task.
 
-It should follow a consistent structure so `Manager`, `Coder`, and `QA` can all read the same intent.
+It should follow a consistent structure so `Coder` and `QA` can read the same intent.
 
 The current template sections are:
 
@@ -56,24 +71,35 @@ The current template sections are:
 
 Template:
 
-- [templates/description.template.md](/c:/projects/lessons-dashboard/docs/ai/templates/description.template.md)
+- [templates/description.template.md](templates/description.template.md)
 
-## agents-journal.json
+## code.summary.md
 
-`agents-journal.json` is the execution log for that task.
+`code.summary.md` is written by `Coder` in the task folder on the feature branch.
 
-It is used to keep a machine-readable history of what each agent did and when.
+It should explain:
 
-Each journal entry records:
-
-- `timestamp`
-- `agent`
-- `entry`
-- `details`
+- what changed
+- what was validated
+- any remaining follow-up or known risk
 
 Template:
 
-- [templates/agents-journal.template.json](/c:/projects/lessons-dashboard/docs/ai/templates/agents-journal.template.json)
+- [templates/code.summary.template.md](templates/code.summary.template.md)
+
+## qa.summary.md
+
+`qa.summary.md` is written by `QA` in the task folder on the same PR branch before final merge.
+
+It should record:
+
+- what was reviewed
+- whether the PR is acceptable
+- which checks or risks remain relevant
+
+Template:
+
+- [templates/qa.summary.template.md](templates/qa.summary.template.md)
 
 ## Agent Responsibilities
 
@@ -82,26 +108,28 @@ Template:
 `Manager` is responsible for:
 
 - scanning task folders in `tasks/`
-- reading `description.md`
-- deciding whether a task is clear enough
-- adding journal entries when the task is picked up
-- forwarding ready work to `Coder`
-- moving the task folder to `tasks_done/` after the task is fully completed
+- requiring `description.md`
+- selecting the next task or a requested task
+- assigning that task to `Coder`
+
+`Manager` does not update task journals or move task folders.
 
 ### Coder
 
 `Coder` is responsible for:
 
 - reading the task description
-- adding journal entries when implementation starts
-- adding journal entries when implementation is handed to `QA`
+- implementing the task on a feature branch from `dev`
+- writing `code.summary.md`
+- opening a PR to `dev`
 
 ### QA
 
 `QA` is responsible for:
 
-- adding journal entries when review starts
-- adding journal entries when the review is approved or when changes are requested
+- reviewing the Coder PR against the task description
+- writing `qa.summary.md`
+- either requesting fixes or merging the PR
 
 ## Expected Flow
 
@@ -110,51 +138,39 @@ Template:
 The user creates a new folder under `tasks/` and adds:
 
 - `description.md`
-- `agents-journal.json`
 
-### 2. Manager picks up the task
+### 2. Manager dispatches the task
 
-`Manager` reads the task and writes a journal event that the task was picked up.
-
-If the task is clear and ready, `Manager` writes a journal entry that it is being passed to `Coder`.
-
-If the task is not clear, `Manager` writes that it is blocked and communicates with the user.
+The `Manager Dispatch` workflow selects the task and assigns it to Copilot with the `coder` custom agent.
 
 ### 3. Coder starts implementation
 
-`Coder` writes a journal event that implementation has started.
+`Coder` writes `code.summary.md` in the task folder and opens a PR to `dev`.
 
-When implementation is complete, `Coder` writes a journal event that the task is being passed to `QA`.
+The PR description must include:
+
+`Task-Folder: tasks/<task-name>`
 
 ### 4. QA reviews
 
-`QA` writes a journal event that review has started.
+`QA` writes `qa.summary.md` on the PR branch.
 
 If changes are needed:
 
-- `QA` adds a journal entry describing the result
-- the task returns to `Coder`
+- `QA` leaves concrete PR comments
+- the task stays in `tasks/`
+- `Coder` updates the same PR
 
-If the task is approved:
+If the task is accepted:
 
-- `QA` adds a journal entry that the task passed QA
-- the task returns to `Manager` for completion handling
+- `QA` merges the PR to `dev` when the environment permits it
 
-### 5. Manager closes the task
+### 5. Post-merge completion
 
-After QA approval and workflow completion:
+After the PR is merged:
 
-- `Manager` adds the final journal entry
-- `Manager` moves the full task folder from `tasks/` to `tasks_done/`
-
-## Journal Entry Style
-
-Journal entries should be:
-
-- short enough to scan quickly
-- specific enough to understand what happened
-- chronological
-- written as factual event records rather than long discussion threads
+- the `Complete Task On Merge` workflow moves the full task folder from `tasks/` to `tasks_done/`
+- the matching Coder dispatch issue is closed
 
 ## Naming Guidance
 
@@ -170,5 +186,5 @@ This keeps tasks human-readable and stable.
 
 ## Notes
 
-- `agents-journal-example.json` can be kept as an example during early setup, but the actual workflow file for each task is `agents-journal.json`
-- if the task description format evolves later, the template should be updated together with this document
+- If the task description format evolves later, the template should be updated together with this document.
+- `agents-journal-example.json` can remain as a legacy reference, but it is not part of the current automation flow.
